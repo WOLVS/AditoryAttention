@@ -1,0 +1,271 @@
+%code used for generation of synthetic resting data for file 2 of the participant 1 whihc in reality was recording 3 in the whole dataset.
+%% May 2021, Jessica Gemignani
+%% Generate synthetic fNIRS data
+%% Add required paths
+addpath(genpath("C:\Users\xtwf7586\OneDrive - University of Leeds\New folder\nirs-toolbox-master"))
+addpath(genpath("C:\Users\xtwf7586\OneDrive - University of Leeds\New folder\nirs-resources-main\syntheticNIRS"))
+rng(99)
+
+%% Start simulation
+% Define everything else below
+
+%{
+
+If you use this code in you work, please cite it using one of the following : 
+ - Gemignani Jessica, and Judit Gervain (2021) "Comparing different pre-processing routines for infant fNIRS data." Developmental cognitive neuroscience 48: 100943.
+ (https://github.com/JessicaGem/mywebsite/blob/gh-pages/GemignaniGervain2021.pdf) %% in this paper the dataset created here is employed to compare pre-processing routines
+  
+ - Gemignani Jessica (2021) "Classification of fNIRS data with LDA and SVM: a proof-of-concept for application in infant studies" in press in 43rd Annual International Conference of the IEEE Engineering in Medicine and Biology Society
+ (pdf available soon) %% in this paper the dataset created here is employed to compare classifiers
+
+- Gemignani Jessica and Gervain Judit (2021) "A practical guide for synthetic fNIRS data generation", in press in 43rd Annual International Conference of the IEEE Engineering in Medicine and Biology Society
+(pdf available soon) %% this paper describes each simulation step in detail
+
+%}
+%{
+Dependencies: 
+- Brain AnalyzIR Toolbox (https://github.com/huppertt/nirs-toolbox)
+- fixedStimDesign.m function
+
+Inputs: 
+- savingFolder
+- SD variable (info about montage)
+- number of subjects (nsubjects)
+- sampling frequency, Hz (Fs)
+- tot duration of each timetraces (totSamples)
+
+
+Outputs: 
+- parameters
+- data (data_atifacts)
+
+%}
+
+
+which simPhysioNoise_variableHz
+  
+%% To be defined by the user
+% savingFolder 
+nsubjects = 1;           % number of synthetic participants
+%SD = 3;                  % standard deviation of HRF amplitude
+Fs = 25.20;                 % sampling frequency in Hz
+totSamples = round (28.69*Fs);        % total number of time points (e.g., 30s @ 10 Hz)
+% Load real probe layout from SNIRF
+raw = nirs.io.loadSNIRF("C:\Users\xtwf7586\OneDrive - University of Leeds\fnirs\AuditoryRecording13032025\2025-03-13_003\2025-03-13_003.snirf");
+
+
+SD = raw.probe;
+% Define the source-detector pairs you want to keep
+channels_to_keep = {
+    'S3_D3'
+    'S3_D4'
+    'S4_D4'
+    'S5_D3'
+    'S6_D4'
+    'S6_D5'
+    'S6_D6'   % If this is a valid link, otherwise skip
+    'S7_D5'
+    'S8_D6'
+};
+
+% Convert probe link table to strings like 'S3_D4'
+link_str = strcat("S", string(SD.link.source), "_D", string(SD.link.detector));
+
+% Keep rows that match your selected channels
+keep_idx = ismember(link_str, channels_to_keep);
+
+% Keep both wavelengths (e.g., 760 and 850 nm)
+SD.link = SD.link(keep_idx, :);
+
+%% Setup simulation parameters for three noise levels (low, medium, high)
+spike_amplitude=  [2.5 7 18];
+shift_amplitude=  [1.5 3 4]; 
+
+subjects_Noise1= nirs.core.Data(); 
+subjects_Noise2= nirs.core.Data(); 
+subjects_Noise3= nirs.core.Data(); 
+
+parameters_Noise1= cell(1, nsubjects); 
+parameters_Noise2= cell(1, nsubjects); 
+parameters_Noise3= cell(1, nsubjects); 
+
+for n=1: nsubjects 
+
+    totLength=  totSamples./Fs; % duration 
+    t = (0:totSamples-1)' / Fs;
+ 
+    
+    
+    %% Step 1) Create experimental design 
+    
+    % The parameters below replicate the experimental design employed in
+    % Gervain et al. 2012. They can be changed as needed
+    
+    %tmin=       300;              % 5 minutes resting state
+    %stimDur=    18;
+    %nStimuli=   14;
+    %stimSpace1= 18+25;            % In this case we want a pause ranging between 25 and 35 s
+    %stimSpace2= 18+35;
+    
+    %ncond=1;
+    
+    %stim= nirs.testing.fixedStimDesign( t, tmin, stimDur, nStimuli, stimSpace1, stimSpace2, ncond);
+    
+    %% Step 2) Introduce serial correlations by means of AR model 
+    % For more details: Barker et al. 2013
+    
+    probe = SD;
+
+    
+    sigma=              0.33;                % spatial correlation between channels
+    ar_order=           30;                % temporal correlation
+    
+    noise= nirs.testing.simARNoise(probe, t, ar_order, sigma);
+    
+    %% Step 3) Introduce physiological confound
+    % Assume: heart rate ~1.5 Hz, respiration ~0.3 Hz, Meyer waves ~0.1 Hz
+    
+    cardiacHz=          1.5; 
+    respHz=             0.3; 
+    meyerHz=            0.1; 
+    
+    %Specify amplitudes:
+    cardiac_amp=        0.25;
+    resp_amp=           0.25;
+    mayer_amp =         0.25;
+    
+    data_physio = simPhysioNoise_variableHz (noise, cardiac_amp , resp_amp , mayer_amp, ...
+                        cardiacHz, respHz, meyerHz);
+    
+    % TBD: Consolidate ext coefficients and DPF
+    
+    % ok, now add first HRFs and then motion artifacts (that can ruin HRFs)
+   data = data_physio;
+    
+    
+    iter=               0;
+    
+    mean_cv_all = zeros(1, 3);  % to store CoV for each noise level
+
+    for noiselevel= 1:3
+        
+        iter=           iter+1;
+        spike_amp=      spike_amplitude(noiselevel);
+        shift_amp=      shift_amplitude(noiselevel);
+        
+        
+        %% Step 4) Add synthetic HRFs 
+        
+        % Amplitude of HRF (for HbR it's -HbO/2)
+
+        % HRFs are added only to first 12 channels:
+        %sd =            unique([noise.probe.link.source noise.probe.link.detector], 'rows');
+        %channels =      sd(1:round(end/2),:);
+        
+        % TBD: Consolidate ext coefficients and DPF
+        %[data, hrf_truth, trueHbO, trueHbR] =     nirs.testing.simData_variableBeta(data_physio, stim, betaActiveChannels, channels );
+        
+        % Compute initial coefficient of variation, before introducing
+        % artifacts
+       % ini_cv=         nanmean(nanstd(data.data, [], 1)./nanmean(data.data, 1)).*100;
+        
+     
+
+        %% Step 5) Introduce motion artifacts
+        
+        spikes_per_min=  2;
+        shifts_per_min=  1.5;
+        
+        % For the typical amplitudes I followed Barker et al 2013
+        
+        
+        data_artifacts = nirs.testing.simMotionArtifact(data, spikes_per_min, shifts_per_min);
+
+
+
+
+
+        
+        cv_vals = nanstd(data_artifacts.data, [], 1) ./ nanmean(data_artifacts.data, 1);
+        cv_vals = cv_vals(~isnan(cv_vals));  % Remove NaNs manually
+        fin_cv = median(cv_vals) * 100;
+
+        
+        %% Step 6) Save
+        
+        % Save out useful parameters: 
+        
+        parameters.iteration=   iter;
+        parameters.subject=     n;
+        %parameters.beta=        betaActiveChannels;
+        %parameters.active_ch=   hrf_truth;
+        %parameters.trueHbO=     trueHbO;
+        %parameters.trueHbR=     trueHbR;
+        %parameters.spike_inds=  spike_inds;
+        %parameters.shift_inds=  shift_inds;
+        %parameters.spike_amp=   spike_amp;
+        %parameters.shift_amp=   shift_amp;
+        %arameters.spike_min=   spikes_per_minute;
+        %parameters.shift_min=   shifts_per_minute;
+        parameters.cardiac_amp= cardiac_amp;
+        parameters.resp_amp=    resp_amp;
+        parameters.mayer_amp=   mayer_amp;
+        parameters.ar_order=    ar_order;
+        cv_synth = std(data_artifacts.data) ./ mean(data_artifacts.data);
+        mean_cv_synth = mean(cv_synth, 'omitnan');
+        mean_cv_all(noiselevel) = mean_cv_synth * 100;
+        fprintf('Noise Level %d - Mean CoV: %.2f%%\n', noiselevel, mean_cv_all(noiselevel));
+
+
+        if noiselevel==1
+            subjects_Noise1(n)=         data_artifacts; 
+            parameters_Noise1{1, n}=    parameters; 
+        elseif noiselevel==2
+            subjects_Noise2(n)=         data_artifacts; 
+            parameters_Noise2{1, n}=    parameters; 
+        elseif noiselevel==3
+            subjects_Noise3(n)=         data_artifacts; 
+            parameters_Noise3{1, n}=    parameters; 
+        end      
+
+        filename_params = sprintf('2parameters_noiselevel%d.mat', noiselevel);
+        filename_output = sprintf('2rest_OD_noiselevel%d.mat', noiselevel);
+
+        save(filename_params, 'parameters', 'fin_cv');
+        save(filename_output, 'data_artifacts');
+        % === Save Python-compatible struct version ===
+        link_table = data_artifacts.probe.link;
+
+        S = struct();
+        S.data  = data_artifacts.data;
+        S.time  = data_artifacts.time;
+
+% Extract clean flat arrays for probe.link
+        S.probe = struct();
+        S.probe.link = struct();
+        S.probe.link.source   = table2array(link_table(:, "source"));
+        S.probe.link.detector = table2array(link_table(:, "detector"));
+        S.probe.link.type     = table2array(link_table(:, "type"));
+
+% Save as flat struct
+        filename_struct = sprintf('RESOD2_struct_noiselevel%d_file2.mat', noiselevel);
+        save(filename_struct, '-struct', 'S');
+
+
+    end
+    
+end
+fprintf('\n=== Summary of Mean CoV by Noise Level ===\n');
+for i = 1:3
+    fprintf('Noise Level %d: %.2f%%\n', i, mean_cv_all(i));
+end
+% === Plot synthetic OD data for Noise Level 2 ===
+figure;
+plot(subjects_Noise2(n).time, subjects_Noise2(n).data);
+xlabel('Time (s)');
+ylabel('Optical Density');
+title('Synthetic fNIRS OD Data - Noise Level 2');
+legend(string(1:size(subjects_Noise2(n).data,2)), 'Location', 'northeastoutside');
+grid on;
+plot(data.time, data.data);
+title('Before motion artifacts');
